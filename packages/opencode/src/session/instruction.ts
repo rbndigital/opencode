@@ -150,7 +150,10 @@ export const layer: Layer.Layer<
       return paths
     })
 
-    const system = Effect.fn("Instruction.system")(function* () {
+    const SYSTEM_CACHE_TTL_MS = 30_000
+    let systemCache: { value: string[]; expires: number } | undefined
+
+    const computeSystem = Effect.fn("Instruction.computeSystem")(function* () {
       const config = yield* cfg.get()
       const paths = yield* systemPaths()
       const urls = (config.instructions ?? []).filter(
@@ -164,6 +167,14 @@ export const layer: Layer.Layer<
         ...Array.from(paths).flatMap((item, i) => (files[i] ? [`Instructions from: ${item}\n${files[i]}`] : [])),
         ...urls.flatMap((item, i) => (remote[i] ? [`Instructions from: ${item}\n${remote[i]}`] : [])),
       ]
+    })
+
+    const system = Effect.fn("Instruction.system")(function* () {
+      const cached = systemCache
+      if (cached && cached.expires > Date.now()) return cached.value
+      const value = yield* computeSystem()
+      systemCache = { value, expires: Date.now() + SYSTEM_CACHE_TTL_MS }
+      return value
     })
 
     const find = Effect.fn("Instruction.find")(function* (dir: string) {

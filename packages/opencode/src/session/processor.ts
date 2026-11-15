@@ -34,6 +34,27 @@ import { Usage, type LLMEvent } from "@opencode-ai/llm"
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
 
+// Raw per-provider cache fields (AI SDK camelCase, native protocol snake_case).
+function cacheStats(metadata: Record<string, Record<string, unknown>> | undefined): Record<string, unknown> {
+  const anthropic = metadata?.anthropic
+  const openai = metadata?.openai
+  const details = isRecord(openai?.prompt_tokens_details) ? openai?.prompt_tokens_details : undefined
+  return {
+    ...(anthropic?.cacheCreationInputTokens !== undefined
+      ? { anthropicCacheCreation: anthropic.cacheCreationInputTokens }
+      : {}),
+    ...(anthropic?.cache_creation_input_tokens !== undefined
+      ? { anthropicCacheCreation: anthropic.cache_creation_input_tokens }
+      : {}),
+    ...(anthropic?.cacheReadInputTokens !== undefined ? { anthropicCacheRead: anthropic.cacheReadInputTokens } : {}),
+    ...(anthropic?.cache_read_input_tokens !== undefined
+      ? { anthropicCacheRead: anthropic.cache_read_input_tokens }
+      : {}),
+    ...(typeof openai?.cachedInputTokens === "number" ? { cachedInputTokens: openai.cachedInputTokens } : {}),
+    ...(typeof details?.cached_tokens === "number" ? { cachedInputTokens: details.cached_tokens } : {}),
+  }
+}
+
 export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
@@ -561,6 +582,11 @@ export const layer = Layer.effect(
               model: ctx.model,
               usage: value.usage ?? new Usage({}),
               metadata: value.providerMetadata,
+            })
+            slog.info("cache", {
+              read: usage.tokens.cache.read,
+              write: usage.tokens.cache.write,
+              ...cacheStats(value.providerMetadata),
             })
             if (!ctx.assistantMessage.summary) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.

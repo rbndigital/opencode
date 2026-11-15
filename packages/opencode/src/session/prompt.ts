@@ -88,6 +88,17 @@ function isOrphanedInterruptedTool(part: SessionLegacy.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
+// Claude 4.6+ / 5.x / Mythos reject requests whose last message has role
+// "assistant" (prefill removed), so those models get the prefill as "user".
+const newGenerationClaudeRegex = /claude-(4\.(?:[6-9]|[1-9][0-9])|[5-9])/i
+
+function stepPrefill(model: Provider.Model) {
+  const newGeneration =
+    (model.providerID.includes("anthropic") || model.providerID.includes("bedrock")) &&
+    (newGenerationClaudeRegex.test(model.id) || model.id.includes("mythos"))
+  return newGeneration ? { role: "user" as const, content: MAX_STEPS } : { role: "assistant" as const, content: MAX_STEPS }
+}
+
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionLegacy.WithParts, Image.Error>
@@ -297,6 +308,72 @@ export const layer = Layer.effect(
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
         .pipe(Effect.catchCause((cause) => elog.error("failed to generate title", { error: Cause.squash(cause) })))
+    })
+
+    const ACK_SYSTEM_PROMPT =
+      "Respond with a single very short sentence acknowledging you're working on the user's request. No preamble, no tool calls."
+    // ~60 tokens at ~4 chars/token; StreamInput has no per-call maxOutputTokens.
+    const ACK_MAX_CHARS = 240
+    const ACK_PROMPT_MAX_CHARS = 4000
+
+    const fastAck = Effect.fn("SessionPrompt.fastAck")(function* (input: {
+      sessionID: SessionID
+      assistantMessageID: MessageID
+      user: SessionLegacy.WithParts
+      agent: Agent.Info
+      model: Provider.Model
+    }) {
+      const info = input.user.info
+      if (info.role !== "user") return
+      const small = (yield* provider.getSmallModel(input.model.providerID)) ?? input.model
+      const prompt = input.user.parts
+        .filter((p): p is SessionLegacy.TextPart => p.type === "text" && !p.ignored && !p.synthetic)
+        .map((p) => p.text)
+        .join("\n")
+        .slice(0, ACK_PROMPT_MAX_CHARS)
+      if (!prompt.trim()) return
+      const part: SessionLegacy.TextPart = yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: input.assistantMessageID,
+        sessionID: input.sessionID,
+        type: "text",
+        text: "",
+        time: { start: Date.now() },
+        metadata: { ack: true },
+      })
+      const markIgnored = Effect.gen(function* () {
+        // Ignored parts are skipped in MessageV2.toModelMessagesEffect, so the
+        // ack never reaches the model or the visible history.
+        part.ignored = true
+        part.time = { start: part.time?.start ?? Date.now(), end: Date.now() }
+        yield* sessions.updatePart(part)
+      })
+      let ackText = ""
+      yield* llm
+        .stream({
+          agent: input.agent,
+          user: info,
+          system: [ACK_SYSTEM_PROMPT],
+          small: true,
+          tools: {},
+          model: small,
+          sessionID: input.sessionID,
+          messages: [{ role: "user", content: prompt }],
+        })
+        .pipe(
+          Stream.filter(LLMEvent.is.textDelta),
+          Stream.takeUntil((event) => (ackText += event.text).length >= ACK_MAX_CHARS),
+          Stream.runForEach((event) =>
+            sessions.updatePartDelta({
+              sessionID: input.sessionID,
+              messageID: input.assistantMessageID,
+              partID: part.id,
+              field: "text",
+              delta: event.text,
+            }),
+          ),
+          Effect.ensuring(markIgnored),
+        )
     })
 
     const handleSubtask = Effect.fn("SessionPrompt.handleSubtask")(function* (input: {
@@ -1412,8 +1489,17 @@ export const layer = Layer.effect(
               })
             }
 
-            if (step === 1)
+            if (step === 1) {
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
+              if (flags.experimentalFastAck && lastUserMsg)
+                yield* fastAck({
+                  sessionID,
+                  assistantMessageID: msg.id,
+                  user: lastUserMsg,
+                  agent,
+                  model,
+                }).pipe(Effect.ignore, Effect.forkIn(scope))
+            }
 
             if (step > 1 && lastFinished) {
               for (const m of msgs) {
@@ -1451,7 +1537,7 @@ export const layer = Layer.effect(
               sessionID,
               parentSessionID: session.parentID,
               system,
-              messages: [...modelMsgs, ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : [])],
+              messages: [...modelMsgs, ...(isLastStep ? [stepPrefill(model)] : [])],
               tools,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,

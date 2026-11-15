@@ -287,6 +287,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       })
       for (const part of msg.parts) {
         if (part.type === "text") {
+          if (part.ignored) continue
           const text = part.text === "" && hasSignedReasoning ? " " : part.text
           assistantMessage.parts.push({
             type: "text",
