@@ -42,6 +42,7 @@ import { DialogHelp } from "./ui/dialog-help"
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogWorkspaceList } from "@tui/component/dialog-workspace-list"
+import { openWorkspaceSelect } from "@tui/component/dialog-workspace-create"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
 import { ThemeProvider, useTheme } from "@tui/context/theme"
 import { Home } from "@tui/routes/home"
@@ -616,6 +617,95 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         slashName: "workspaces",
         run: () => {
           dialog.replace(() => <DialogWorkspaceList />)
+        },
+      },
+      {
+        name: "workspace.session",
+        title: "New session in workspace",
+        category: "Workspace",
+        hidden: !Flag.OPENCODE_EXPERIMENTAL_WORKSPACES,
+        slashName: "workspace-session",
+        run: () => {
+          let busy = false
+          void openWorkspaceSelect({
+            dialog,
+            sdk,
+            sync,
+            project,
+            toast,
+            onSelect: async (selection) => {
+              if (busy) return
+              busy = true
+              try {
+                if (selection.type === "new") {
+                  toast.show({
+                    title: "Workspace",
+                    message: `Creating ${selection.workspaceName} workspace… (this provisions the sandbox)`,
+                    variant: "info",
+                  })
+                }
+                const workspaceID = await (async () => {
+                  if (selection.type === "none") return undefined
+                  if (selection.type === "existing") return selection.workspaceID
+                  const result = await sdk.client.experimental.workspace
+                    .create({ type: selection.workspaceType, branch: null })
+                    .catch(() => undefined)
+                  const created = result?.data
+                  if (!created) {
+                    toast.show({
+                      message: `Failed to create workspace: ${errorMessage(result?.error ?? "no response")}`,
+                      variant: "error",
+                    })
+                    return undefined
+                  }
+                  await project.workspace.sync().catch(() => undefined)
+                  toast.show({
+                    title: "Workspace",
+                    message: `Workspace ready — creating session`,
+                    variant: "success",
+                  })
+                  return created.id
+                })()
+                if (workspaceID === undefined && selection.type !== "none") return
+                // crear la sesión LOCAL y luego hacer warp: la fila local queda
+                // con workspace_id y el middleware rotea todas las llamadas
+                // (la sesión nace en el sandbox vía POST /sync/replay)
+                const res = await sdk.client.session.create({}).catch((e) => ({ data: undefined, error: e }))
+                const localID = res?.data?.id
+                if (!localID) {
+                  toast.show({
+                    title: "Workspace",
+                    message: `Failed to create session: ${errorMessage(res?.error ?? "no response")}`,
+                    variant: "error",
+                  })
+                  return
+                }
+                if (workspaceID !== undefined) {
+                  const warp = await sdk.client.experimental.workspace
+                    .warp({ id: workspaceID, sessionID: localID, copyChanges: false })
+                    .catch((e) => ({ error: e }))
+                  if (!warp || warp.error) {
+                    toast.show({
+                      title: "Workspace",
+                      message: `Failed to warp session: ${errorMessage(warp?.error ?? "no response")}`,
+                      variant: "error",
+                    })
+                    return
+                  }
+                }
+                dialog.clear()
+                route.navigate({ type: "session", sessionID: localID })
+              } catch (e) {
+                toast.show({
+                  title: "Workspace",
+                  message: `Failed: ${errorMessage(e)}`,
+                  variant: "error",
+                })
+              } finally {
+                busy = false
+              }
+            },
+          })
         },
       },
       ...Array.from({ length: 9 }, (_, i) => ({

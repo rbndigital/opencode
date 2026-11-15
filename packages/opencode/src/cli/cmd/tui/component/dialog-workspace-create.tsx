@@ -191,6 +191,7 @@ export function DialogWorkspaceSelect(props: {
   const sdk = useSDK()
   const toast = useToast()
   const [adapters, setAdapters] = createSignal<Adapter[] | undefined>(props.adapters)
+  const [pending, setPending] = createSignal(false)
   const omittedWorkspaceID = createMemo(() => (route.data.type === "session" ? project.workspace.current() : undefined))
 
   onMount(() => {
@@ -251,28 +252,21 @@ export function DialogWorkspaceSelect(props: {
   if (!adapters()) return null
   return (
     <DialogSelect<WorkspaceSelectValue>
-      title="Warp"
+      title={pending() ? "Working…" : "Warp"}
       skipFilter={true}
       renderFilter={false}
       options={options()}
       onSelect={(option) => {
         if (!option.value) return
-        if (option.value.type === "none") {
-          void props.onSelect(option.value)
+        if (pending()) return
+        if (option.value.type === "existing-list") {
+          dialog.replace(() => (
+            <DialogExistingWorkspaceSelect omitWorkspaceID={omittedWorkspaceID()} onSelect={props.onSelect} />
+          ))
           return
         }
-        if (option.value.type === "new") {
-          void props.onSelect(option.value)
-          return
-        }
-        if (option.value.type === "existing") {
-          void props.onSelect(option.value)
-          return
-        }
-
-        dialog.replace(() => (
-          <DialogExistingWorkspaceSelect omitWorkspaceID={omittedWorkspaceID()} onSelect={props.onSelect} />
-        ))
+        setPending(true)
+        void Promise.resolve(props.onSelect(option.value)).finally(() => setPending(false))
       }}
     />
   )

@@ -16,6 +16,7 @@ import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { HistoryPayload, ReplayPayload, SessionPayload } from "../groups/sync"
 import * as Log from "@opencode-ai/core/util/log"
+import { WorkspaceRouteContext } from "../middleware/workspace-routing"
 
 const log = Log.create({ service: "server.sync" })
 
@@ -35,13 +36,46 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
     })
 
     const replay = Effect.fn("SyncHttpApi.replay")(function* (ctx: { payload: typeof ReplayPayload.Type }) {
-      const payload: EventV2.SerializedEvent[] = ctx.payload.events.map((event) => ({
+      const routeCtx = yield* WorkspaceRouteContext
+      const to = routeCtx.directory
+      let raw: EventV2.SerializedEvent[] = ctx.payload.events.map((event) => ({
         id: EventV2.ID.make(event.id),
         aggregateID: event.aggregateID,
         seq: event.seq,
         type: event.type,
         data: { ...event.data },
       }))
+      // warp entre entornos distintos: las rutas del remitente no existen aquí;
+      // se reescriben al directorio de esta instancia (ej. /vercel en un sandbox).
+      // El payload trae space.directory (destino), así que el directorio de
+      // ORIGEN se busca dentro del primer evento que tenga clave "directory"
+      // (anidada: session.created → info.directory, etc.)
+      const findDir = (v: unknown): string | undefined => {
+        if (Array.isArray(v)) {
+          for (const x of v) {
+            const r = findDir(x)
+            if (r) return r
+          }
+          return undefined
+        }
+        if (v && typeof v === "object") {
+          const o = v as Record<string, unknown>
+          if (typeof o["directory"] === "string" && o["directory"]) return o["directory"]
+          for (const k of Object.keys(o)) {
+            const r = findDir(o[k])
+            if (r) return r
+          }
+        }
+        return undefined
+      }
+      const origin = raw.map((e) => findDir(e.data)).find((d): d is string => !!d && d.length > 0 && d !== to)
+      if (origin && to && origin !== to) {
+        let dumped = JSON.stringify(raw).split(origin).join(to)
+        const rel = origin.replace(/^\//, "")
+        if (rel !== origin) dumped = dumped.split(rel).join(to.replace(/^\//, ""))
+        raw = JSON.parse(dumped)
+      }
+      const payload: EventV2.SerializedEvent[] = raw
       const source = payload[0].aggregateID
       log.info("sync replay requested", {
         sessionID: source,

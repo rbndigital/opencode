@@ -87,6 +87,13 @@ function defaultDirectory(request: HttpServerRequest.HttpServerRequest, url: URL
   return url.searchParams.get("directory") || request.headers["x-opencode-directory"] || process.cwd()
 }
 
+function withWorkspaceDirectory(url: URL, workspace: Workspace.Info): URL {
+  if (!workspace.directory) return url
+  const next = new URL(url.toString())
+  if (next.searchParams.has("directory")) next.searchParams.set("directory", workspace.directory)
+  return next
+}
+
 function shouldStayOnControlPlane(request: HttpServerRequest.HttpServerRequest, url: URL): boolean {
   return isLocalWorkspaceRoute(request.method, url.pathname) || url.pathname.startsWith("/console")
 }
@@ -125,7 +132,7 @@ function proxyRemote(
         contentType: "text/plain; charset=utf-8",
       })
     }
-    const proxyURL = workspaceProxyURL(target.url, url)
+    const proxyURL = workspaceProxyURL(target.url, withWorkspaceDirectory(url, workspace))
     const headers = request.headers as Record<string, string>
     if (headers["upgrade"]?.toLowerCase() === "websocket") return yield* HttpApiProxy.websocket(request, proxyURL)
     const response = yield* HttpApiProxy.http(client, proxyURL, target.headers, request)
