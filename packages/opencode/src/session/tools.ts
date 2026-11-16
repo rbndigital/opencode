@@ -12,6 +12,7 @@ import { Truncate } from "@/tool/truncate"
 import { Plugin } from "@/plugin"
 import type { TaskPromptOps } from "@/tool/task"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
+import type { JSONSchema7 } from "@ai-sdk/provider"
 import { Effect } from "effect"
 import { MessageV2 } from "./message-v2"
 import { Session } from "./session"
@@ -23,6 +24,25 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 
 const log = Log.create({ service: "session.tools" })
 
+// Per-run memoization for resolve(): the registry listing, the MCP listing and
+// the provider-transformed schemas depend only on (agent, provider, model), so
+// steps 2..N of one prompt turn can reuse step 1's work. MCP staleness within a
+// single turn is acceptable. Never reused across agents/models/providers.
+export interface RunCacheEntry {
+  readonly registry: Tool.Def[]
+  readonly registrySchemas: Map<string, JSONSchema7>
+  readonly mcp: Record<string, AITool>
+  readonly mcpSchemas: Map<string, JSONSchema7>
+}
+
+export interface RunCache {
+  readonly entries: Map<string, RunCacheEntry>
+}
+
+export function createRunCache(): RunCache {
+  return { entries: new Map() }
+}
+
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
   model: Provider.Model
@@ -31,6 +51,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   bypassAgentCheck: boolean
   messages: SessionLegacy.WithParts[]
   promptOps: TaskPromptOps
+  cache?: RunCache
 }) {
   using _ = log.time("resolveTools")
   const tools: Record<string, AITool> = {}
@@ -40,6 +61,32 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const registry = yield* ToolRegistry.Service
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
+
+  const cacheKey = input.cache
+    ? `${input.agent.name}:${input.model.providerID}:${input.model.api.id}`
+    : undefined
+  let entry = cacheKey ? input.cache?.entries.get(cacheKey) : undefined
+  if (input.cache && cacheKey && !entry) {
+    entry = {
+      registry: yield* registry.tools({
+        modelID: ProviderV2.ModelID.make(input.model.api.id),
+        providerID: input.model.providerID,
+        agent: input.agent,
+      }),
+      mcp: yield* mcp.tools(),
+      registrySchemas: new Map(),
+      mcpSchemas: new Map(),
+    }
+    input.cache.entries.set(cacheKey, entry)
+  }
+  const registryItems = entry
+    ? entry.registry
+    : yield* registry.tools({
+        modelID: ProviderV2.ModelID.make(input.model.api.id),
+        providerID: input.model.providerID,
+        agent: input.agent,
+      })
+  const mcpItems = entry ? entry.mcp : yield* mcp.tools()
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -74,12 +121,12 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         .pipe(Effect.orDie),
   })
 
-  for (const item of yield* registry.tools({
-    modelID: ProviderV2.ModelID.make(input.model.api.id),
-    providerID: input.model.providerID,
-    agent: input.agent,
-  })) {
-    const schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
+  for (const item of registryItems) {
+    let schema: JSONSchema7 | undefined = entry?.registrySchemas.get(item.id)
+    if (!schema) {
+      schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
+      entry?.registrySchemas.set(item.id, schema)
+    }
     tools[item.id] = tool({
       description: item.description,
       inputSchema: jsonSchema(schema),
@@ -117,14 +164,23 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  for (const [key, item] of Object.entries(yield* mcp.tools())) {
+  for (const [key, item] of Object.entries(mcpItems)) {
     const execute = item.execute
     if (!execute) continue
 
-    const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
-    const transformed = ProviderTransform.schema(input.model, schema)
-    item.inputSchema = jsonSchema(transformed)
-    item.execute = (args, opts) =>
+    let transformed: JSONSchema7 | undefined = entry?.mcpSchemas.get(key)
+    if (!transformed) {
+      transformed = ProviderTransform.schema(
+        input.model,
+        yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema)),
+      )
+      entry?.mcpSchemas.set(key, transformed)
+    }
+    // Wrap a copy: cached items must stay pristine or the execute chain gets
+    // bound twice (permission asked twice).
+    const wrapped = { ...item }
+    wrapped.inputSchema = jsonSchema(transformed)
+    wrapped.execute = (args, opts) =>
       run.promise(
         Effect.gen(function* () {
           const ctx = context(args, opts)
@@ -201,7 +257,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           return output
         }),
       )
-    tools[key] = item
+    tools[key] = wrapped
   }
 
   return tools

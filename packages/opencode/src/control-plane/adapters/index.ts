@@ -1,5 +1,6 @@
 import type { ProjectV2 } from "@opencode-ai/core/project"
 import type { WorkspaceAdapter, WorkspaceAdapterEntry } from "../types"
+import { AdapterSettings } from "../adapter-settings"
 import { WorktreeAdapter } from "./worktree"
 
 const BUILTIN: Record<string, WorkspaceAdapter> = {
@@ -18,12 +19,22 @@ export function getAdapter(projectID: ProjectV2.ID, type: string): WorkspaceAdap
   throw new Error(`Unknown workspace adapter: ${type}`)
 }
 
-export function listAdapters(projectID: ProjectV2.ID): WorkspaceAdapterEntry[] {
-  return registeredAdapters(projectID).map(([type, adapter]) => ({
-    type,
-    name: adapter.name,
-    description: adapter.description,
-  }))
+export async function listAdapters(projectID: ProjectV2.ID): Promise<WorkspaceAdapterEntry[]> {
+  return Promise.all(
+    registeredAdapters(projectID).map(async ([type, adapter]) => {
+      const settings = adapter.settings ?? []
+      const required = settings.filter((setting) => setting.required)
+      const present = await Promise.all(required.map((setting) => AdapterSettings.has(projectID, type, setting.key)))
+      return {
+        type,
+        name: adapter.name,
+        description: adapter.description,
+        settings,
+        // An adapter with no required settings counts as configured.
+        configured: required.length === 0 || present.every(Boolean),
+      }
+    }),
+  )
 }
 
 export function registeredAdapters(projectID: ProjectV2.ID): [string, WorkspaceAdapter][] {

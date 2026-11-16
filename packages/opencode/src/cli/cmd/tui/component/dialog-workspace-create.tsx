@@ -9,12 +9,22 @@ import { errorMessage } from "@/util/error"
 import { useSDK } from "../context/sdk"
 import { useToast } from "../ui/toast"
 import { DialogAlert } from "../ui/dialog-alert"
+import { DialogPrompt } from "../ui/dialog-prompt"
 import { DialogWorkspaceFileChanges } from "./dialog-workspace-file-changes"
+
+type AdapterSetting = {
+  key: string
+  label?: string
+  required?: boolean
+  secret?: boolean
+}
 
 type Adapter = {
   type: string
   name: string
   description: string
+  settings?: AdapterSetting[]
+  configured?: boolean
 }
 
 export type WorkspaceSelection =
@@ -72,6 +82,36 @@ async function loadWorkspaceAdapters(input: {
     })
     return undefined
   }
+}
+
+// Prompts for each required setting the server reports as unconfigured and
+// persists the values. Returns false when the user cancels or a save fails,
+// in which case workspace creation must be aborted.
+async function promptAdapterSettings(input: {
+  dialog: ReturnType<typeof useDialog>
+  sdk: ReturnType<typeof useSDK>
+  toast: ReturnType<typeof useToast>
+  adapter: Adapter
+}): Promise<boolean> {
+  if (input.adapter.configured !== false) return true
+  const missing = (input.adapter.settings ?? []).filter((setting) => setting.required)
+  if (missing.length === 0) return true
+  for (const setting of missing) {
+    const value = await DialogPrompt.show(input.dialog, setting.label ?? setting.key, { placeholder: setting.key })
+    if (!value) return false
+    const result = await input.sdk.client.experimental.workspace.adapter
+      .settings({ type: input.adapter.type, body: { [setting.key]: value } })
+      .catch(() => undefined)
+    if (!result || result.error) {
+      input.toast.show({
+        title: "Failed to save adapter settings",
+        message: errorMessage(result?.error ?? `could not save ${setting.key}`),
+        variant: "error",
+      })
+      return false
+    }
+  }
+  return true
 }
 
 export async function openWorkspaceSelect(input: {
@@ -216,7 +256,7 @@ export function DialogWorkspaceSelect(props: {
       ...list.map((adapter) => ({
         title: adapter.name,
         value: { type: "new" as const, workspaceType: adapter.type, workspaceName: adapter.name },
-        description: adapter.description,
+        description: adapter.configured === false ? `${adapter.description} (needs API key)` : adapter.description,
         category: "New workspace",
       })),
       {
@@ -265,8 +305,15 @@ export function DialogWorkspaceSelect(props: {
           ))
           return
         }
+        const selection = option.value
         setPending(true)
-        void Promise.resolve(props.onSelect(option.value)).finally(() => setPending(false))
+        void (async () => {
+          if (selection.type === "new") {
+            const adapter = adapters()?.find((item) => item.type === selection.workspaceType)
+            if (adapter && !(await promptAdapterSettings({ dialog, sdk, toast, adapter }))) return
+          }
+          await Promise.resolve(props.onSelect(selection))
+        })().finally(() => setPending(false))
       }}
     />
   )

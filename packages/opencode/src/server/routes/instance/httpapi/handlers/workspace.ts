@@ -1,9 +1,10 @@
-import { listAdapters } from "@/control-plane/adapters"
+import { listAdapters, registeredAdapters } from "@/control-plane/adapters"
+import { AdapterSettings } from "@/control-plane/adapter-settings"
 import { Workspace } from "@/control-plane/workspace"
 import * as InstanceState from "@/effect/instance-state"
 import { Vcs } from "@/project/vcs"
 import { Cause, Effect } from "effect"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { notFound } from "../errors"
 import { ApiVcsApplyError } from "../groups/instance"
@@ -15,7 +16,17 @@ export const workspaceHandlers = HttpApiBuilder.group(InstanceHttpApi, "workspac
 
     const adapters = Effect.fn("WorkspaceHttpApi.adapters")(function* () {
       const instance = yield* InstanceState.context
-      return yield* Effect.sync(() => listAdapters(instance.project.id))
+      return yield* Effect.promise(() => listAdapters(instance.project.id))
+    })
+
+    const adapterSettings = Effect.fn("WorkspaceHttpApi.adapterSettings")(function* (ctx: {
+      params: { type: string }
+      payload: Record<string, string>
+    }) {
+      const instance = yield* InstanceState.context
+      const known = registeredAdapters(instance.project.id).some(([type]) => type === ctx.params.type)
+      if (!known) return yield* new HttpApiError.BadRequest({})
+      yield* Effect.promise(() => AdapterSettings.set(instance.project.id, ctx.params.type, ctx.payload))
     })
 
     const list = Effect.fn("WorkspaceHttpApi.list")(function* () {
@@ -92,6 +103,7 @@ export const workspaceHandlers = HttpApiBuilder.group(InstanceHttpApi, "workspac
 
     return handlers
       .handle("adapters", adapters)
+      .handle("adapterSettings", adapterSettings)
       .handle("list", list)
       .handle("create", create)
       .handle("syncList", syncList)

@@ -39,6 +39,7 @@ export class ApiWorkspaceCreateError extends Schema.ErrorClass<ApiWorkspaceCreat
 
 export const WorkspacePaths = {
   adapters: `${root}/adapter`,
+  adapterSettings: `${root}/adapter/settings/:type`,
   list: root,
   syncList: `${root}/sync-list`,
   status: `${root}/status`,
@@ -58,6 +59,20 @@ export const WorkspaceApi = HttpApi.make("workspace")
             identifier: "experimental.workspace.adapter.list",
             summary: "List workspace adapters",
             description: "List all available workspace adapters for the current project.",
+          }),
+        ),
+        HttpApiEndpoint.post("adapterSettings", WorkspacePaths.adapterSettings, {
+          params: { type: Schema.String },
+          query: WorkspaceRoutingQuery,
+          payload: Schema.Record(Schema.String, Schema.String),
+          success: described(HttpApiSchema.NoContent, "Adapter settings saved"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.workspace.adapter.settings",
+            summary: "Save workspace adapter settings",
+            description:
+              "Persist configuration values (e.g. API keys) for a workspace adapter of the current project. Values are stored server-side and never returned by the API.",
           }),
         ),
         HttpApiEndpoint.get("list", WorkspacePaths.list, {

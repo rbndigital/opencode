@@ -20,10 +20,20 @@ export const WorkspaceListedInfo = Schema.Struct(Struct.omit(WorkspaceInfo.field
 })
 export type WorkspaceListedInfo = DeepMutable<Schema.Schema.Type<typeof WorkspaceListedInfo>>
 
+export const WorkspaceAdapterSetting = Schema.Struct({
+  key: Schema.String,
+  label: Schema.optional(Schema.String),
+  required: Schema.optional(Schema.Boolean),
+  secret: Schema.optional(Schema.Boolean),
+}).annotate({ identifier: "WorkspaceAdapterSetting" })
+export type WorkspaceAdapterSetting = Schema.Schema.Type<typeof WorkspaceAdapterSetting>
+
 export const WorkspaceAdapterEntry = Schema.Struct({
   type: Schema.String,
   name: Schema.String,
   description: Schema.String,
+  settings: Schema.Array(WorkspaceAdapterSetting),
+  configured: Schema.optional(Schema.Boolean),
 })
 export type WorkspaceAdapterEntry = Schema.Schema.Type<typeof WorkspaceAdapterEntry>
 
@@ -41,11 +51,13 @@ export type Target =
 export type WorkspaceAdapterContext = {
   readonly instance?: InstanceContext
   readonly workspaceID?: WorkspaceV2.ID
+  readonly settings?: Record<string, string>
 }
 
 export type WorkspaceAdapter = {
   name: string
   description: string
+  settings?: WorkspaceAdapterSetting[]
   configure(info: WorkspaceInfo, context?: WorkspaceAdapterContext): WorkspaceInfo | Promise<WorkspaceInfo>
   create(
     info: WorkspaceInfo,

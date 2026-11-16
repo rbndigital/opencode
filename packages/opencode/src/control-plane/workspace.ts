@@ -833,7 +833,7 @@ export const layer = Layer.effect(
       const discovered = yield* Effect.forEach(
         registeredAdapters(project.id),
         ([type, adapter]) =>
-          WorkspaceAdapterRuntime.list(adapter).pipe(
+          WorkspaceAdapterRuntime.list(adapter, { projectID: project.id, type }).pipe(
             Effect.catchCause((error) =>
               Effect.sync(() => {
                 log.warn("workspace adapter list failed", { type, error })

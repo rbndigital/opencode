@@ -1632,19 +1632,31 @@ function ReasoningHeader(props: {
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+  // Fast-ack status line: transient hint, rendered dim/italic until the part is
+  // marked ignored and disappears like every other ignored text part.
+  const ack = createMemo(() => !props.part.ignored && props.part.metadata?.ack === true)
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={props.part.text.trim() && !props.part.ignored}>
       <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
-        <markdown
-          syntaxStyle={syntax()}
-          streaming={true}
-          internalBlockMode="top-level"
-          content={props.part.text.trim()}
-          tableOptions={{ style: "grid" }}
-          conceal={ctx.conceal()}
-          fg={theme.markdownText}
-          bg={theme.background}
-        />
+        <Show
+          when={ack()}
+          fallback={
+            <markdown
+              syntaxStyle={syntax()}
+              streaming={true}
+              internalBlockMode="top-level"
+              content={props.part.text.trim()}
+              tableOptions={{ style: "grid" }}
+              conceal={ctx.conceal()}
+              fg={theme.markdownText}
+              bg={theme.background}
+            />
+          }
+        >
+          <text fg={theme.textMuted} attributes={TextAttributes.DIM | TextAttributes.ITALIC}>
+            {props.part.text.trim()}
+          </text>
+        </Show>
       </box>
     </Show>
   )

@@ -311,10 +311,13 @@ export const layer = Layer.effect(
     })
 
     const ACK_SYSTEM_PROMPT =
-      "Respond with a single very short sentence acknowledging you're working on the user's request. No preamble, no tool calls."
-    // ~60 tokens at ~4 chars/token; StreamInput has no per-call maxOutputTokens.
-    const ACK_MAX_CHARS = 240
+      "You are a transient status indicator in a coding agent UI. The user just sent a message. Reply with ONE short status line in Spanish, max 8 words (e.g. \"Dame un segundo, estoy en ello…\"). NEVER answer the question, never restate it, never reason out loud. No preamble, no tool calls."
+    // Hard cap so a disobedient small model can't flash a full answer;
+    // StreamInput has no per-call maxOutputTokens.
+    const ACK_MAX_CHARS = 80
     const ACK_PROMPT_MAX_CHARS = 4000
+    // A stalled provider must not leave a lingering ack part in the DB (observed 34s).
+    const ACK_TIMEOUT = "10 seconds"
 
     const fastAck = Effect.fn("SessionPrompt.fastAck")(function* (input: {
       sessionID: SessionID
@@ -349,7 +352,7 @@ export const layer = Layer.effect(
         yield* sessions.updatePart(part)
       })
       let ackText = ""
-      yield* llm
+      const ackStream = llm
         .stream({
           agent: input.agent,
           user: info,
@@ -358,7 +361,12 @@ export const layer = Layer.effect(
           tools: {},
           model: small,
           sessionID: input.sessionID,
-          messages: [{ role: "user", content: prompt }],
+          messages: [
+            {
+              role: "user",
+              content: `User message:\n"""\n${prompt}\n"""\n\nOne short Spanish status line only. Do not answer it.`,
+            },
+          ],
         })
         .pipe(
           Stream.filter(LLMEvent.is.textDelta),
@@ -372,8 +380,25 @@ export const layer = Layer.effect(
               delta: event.text,
             }),
           ),
-          Effect.ensuring(markIgnored),
         )
+      // First reasoning/text delta from the MAIN model on this assistant message
+      // (any part except the ack one) settles the race and interrupts the ack.
+      const mainStarted = events.subscribe(MessageV2.Event.PartDelta).pipe(
+        Stream.filter(
+          (event) =>
+            event.data.sessionID === input.sessionID &&
+            event.data.messageID === input.assistantMessageID &&
+            event.data.partID !== part.id,
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      )
+      // raceAllFirst (not race) so an ack-stream failure settles immediately
+      // instead of waiting for the watcher, which only ends on main output.
+      yield* Effect.raceAllFirst([ackStream, mainStarted]).pipe(
+        Effect.timeout(ACK_TIMEOUT),
+        Effect.ensuring(markIgnored),
+      )
     })
 
     const handleSubtask = Effect.fn("SessionPrompt.handleSubtask")(function* (input: {
@@ -1325,6 +1350,9 @@ export const layer = Layer.effect(
         const slog = elog.with({ sessionID })
         let structured: unknown
         let step = 0
+        // Resolved tool listings/schemas per (agent, provider, model), valid for this
+        // prompt turn only; steps 2..N reuse step 1's resolution.
+        const toolCache = SessionTools.createRunCache()
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1371,7 +1399,9 @@ export const layer = Layer.effect(
           }
 
           step++
-          if (step === 1)
+          // With fast-ack the title generation is chained after the ack fiber (same
+          // small-model rate limits) instead of being forked concurrently here.
+          if (step === 1 && !flags.experimentalFastAck)
             yield* title({
               session,
               modelID: lastUser.model.modelID,
@@ -1472,6 +1502,7 @@ export const layer = Layer.effect(
               bypassAgentCheck,
               messages: msgs,
               promptOps,
+              cache: toolCache,
             }).pipe(
               Effect.provideService(Plugin.Service, plugin),
               Effect.provideService(Permission.Service, permission),
@@ -1498,7 +1529,18 @@ export const layer = Layer.effect(
                   user: lastUserMsg,
                   agent,
                   model,
-                }).pipe(Effect.ignore, Effect.forkIn(scope))
+                }).pipe(
+                  Effect.ignore,
+                  Effect.andThen(
+                    title({
+                      session,
+                      modelID: lastUser.model.modelID,
+                      providerID: lastUser.model.providerID,
+                      history: msgs,
+                    }).pipe(Effect.ignore),
+                  ),
+                  Effect.forkIn(scope),
+                )
             }
 
             if (step > 1 && lastFinished) {

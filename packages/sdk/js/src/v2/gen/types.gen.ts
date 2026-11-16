@@ -2594,6 +2594,13 @@ export type EventTuiSessionSelect = {
   }
 }
 
+export type WorkspaceAdapterSetting = {
+  key: string
+  label?: string
+  required?: boolean
+  secret?: boolean
+}
+
 export type Workspace = {
   id: string
   type: string
@@ -9019,11 +9026,47 @@ export type ExperimentalWorkspaceAdapterListResponses = {
     type: string
     name: string
     description: string
+    settings: Array<WorkspaceAdapterSetting>
+    configured?: boolean
   }>
 }
 
 export type ExperimentalWorkspaceAdapterListResponse =
   ExperimentalWorkspaceAdapterListResponses[keyof ExperimentalWorkspaceAdapterListResponses]
+
+export type ExperimentalWorkspaceAdapterSettingsData = {
+  body?: {
+    [key: string]: string
+  }
+  path: {
+    type: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/workspace/adapter/settings/{type}"
+}
+
+export type ExperimentalWorkspaceAdapterSettingsErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type ExperimentalWorkspaceAdapterSettingsError =
+  ExperimentalWorkspaceAdapterSettingsErrors[keyof ExperimentalWorkspaceAdapterSettingsErrors]
+
+export type ExperimentalWorkspaceAdapterSettingsResponses = {
+  /**
+   * Adapter settings saved
+   */
+  204: void
+}
+
+export type ExperimentalWorkspaceAdapterSettingsResponse =
+  ExperimentalWorkspaceAdapterSettingsResponses[keyof ExperimentalWorkspaceAdapterSettingsResponses]
 
 export type ExperimentalWorkspaceListData = {
   body?: never

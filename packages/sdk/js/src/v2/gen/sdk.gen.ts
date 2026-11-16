@@ -40,6 +40,8 @@ import type {
   ExperimentalSessionListResponses,
   ExperimentalWorkspaceAdapterListErrors,
   ExperimentalWorkspaceAdapterListResponses,
+  ExperimentalWorkspaceAdapterSettingsErrors,
+  ExperimentalWorkspaceAdapterSettingsResponses,
   ExperimentalWorkspaceCreateErrors,
   ExperimentalWorkspaceCreateResponses,
   ExperimentalWorkspaceListErrors,
@@ -969,6 +971,51 @@ export class Adapter extends HeyApiClient {
       url: "/experimental/workspace/adapter",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Save workspace adapter settings
+   *
+   * Persist configuration values (e.g. API keys) for a workspace adapter of the current project. Values are stored server-side and never returned by the API.
+   */
+  public settings<ThrowOnError extends boolean = false>(
+    parameters: {
+      type: string
+      directory?: string
+      workspace?: string
+      body?: {
+        [key: string]: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "type" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "body", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalWorkspaceAdapterSettingsResponses,
+      ExperimentalWorkspaceAdapterSettingsErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/workspace/adapter/settings/{type}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 }
